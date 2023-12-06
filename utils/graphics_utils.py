@@ -60,7 +60,21 @@ def getProjectionMatrix(znear, zfar, fovX, fovY):
     P = torch.zeros(4, 4)
 
     z_sign = 1.0
-
+    # NOTE: 4x4 projection matrix.
+#     GitHub Copilot: 这段代码中的`P`是一个4x4的投影矩阵，它的形式如下：
+    # ```
+    # P = | 2*znear/(right-left)  0                    (right+left)/(right-left)   0                          |
+    #     | 0                     2*znear/(top-bottom) (top+bottom)/(top-bottom)   0                          |
+    #     | 0                     0                    z_sign*zfar/(zfar-znear)    -(zfar*znear)/(zfar-znear) |
+    #     | 0                     0                    z_sign                      0                          |
+    # ```
+    # 每一项的含义如下：
+    # - `P[0, 0]`和`P[1, 1]`：这两项是x和y轴的缩放因子，它们决定了图像的宽高比。
+    # - `P[0, 2]`和`P[1, 2]`：这两项是x和y轴的偏移因子，它们决定了图像的中心位置。
+    # - `P[2, 2]`：这一项是z轴的缩放因子，它决定了近裁剪面和远裁剪面之间的深度范围。
+    # - `P[2, 3]`：这一项是透视除法的因子，它用于将齐次坐标转换为笛卡尔坐标。
+    # - `P[3, 2]`：这一项决定了z轴的方向，它可以是1.0（表示视点在z轴的正方向）或者-1.0（表示视点在z轴的负方向）。
+    # 其他的元素都是0，因为它们不影响投影变换。
     P[0, 0] = 2.0 * znear / (right - left)
     P[1, 1] = 2.0 * znear / (top - bottom)
     P[0, 2] = (right + left) / (right - left)

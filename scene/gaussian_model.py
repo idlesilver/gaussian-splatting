@@ -20,7 +20,9 @@ from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
-
+from scene.cameras import Camera
+from utils.semantic_utils import extract_features
+from utils.image_utils import load_images, preprocess_image
 class GaussianModel:
 
     def setup_functions(self):
@@ -45,13 +47,16 @@ class GaussianModel:
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree  
         self._xyz = torch.empty(0)
+        # TODO: what does this "dc" and "rest" means?
         self._features_dc = torch.empty(0)
         self._features_rest = torch.empty(0)
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
+        self._semantic = torch.empty(0)
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
+        # TODO: what does this "denom" means?
         self.denom = torch.empty(0)
         self.optimizer = None
         self.percent_dense = 0
@@ -67,6 +72,7 @@ class GaussianModel:
             self._scaling,
             self._rotation,
             self._opacity,
+            self._semantic,
             self.max_radii2D,
             self.xyz_gradient_accum,
             self.denom,
@@ -82,6 +88,7 @@ class GaussianModel:
         self._scaling, 
         self._rotation, 
         self._opacity,
+         self._semantic,
         self.max_radii2D, 
         xyz_gradient_accum, 
         denom,
@@ -106,6 +113,7 @@ class GaussianModel:
     
     @property
     def get_features(self):
+        # NOTE: dc and rest is used for shs, see gaussian_renderer/__init__.py line 82
         features_dc = self._features_dc
         features_rest = self._features_rest
         return torch.cat((features_dc, features_rest), dim=1)
@@ -114,6 +122,10 @@ class GaussianModel:
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
     
+    @property
+    def get_semantic(self):
+        return self._semantic
+
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
@@ -125,12 +137,17 @@ class GaussianModel:
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
+        # color = torch.tensor(np.asarray(pcd.colors)).float().cuda()
+
+        # TODO: add a new channel or new feature for semantic information
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
         features[:, :3, 0 ] = fused_color
+        # FIXME: the 2th dimension only have 3 col, "3:" index to empty sub matrix
         features[:, 3:, 1:] = 0.0
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
-
+        # NOTE: distCUDA2 is from submodules/simple-knn/spatial.cu
+        # TODO: understand it
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
@@ -141,10 +158,56 @@ class GaussianModel:
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
+        # self._color = nn.Parameter(color.requires_grad_(True))
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+
+    def init_semantic(self, dataset, scene):
+        cam: Camera
+        # img_names = []
+        # project_mat = []
+        semantic = torch.zeros((self.get_xyz.shape[0], 1024)).float().cuda()
+        g_cnt = torch.zeros((self.get_xyz.shape[0])).float().cuda()
+        xyzs = self.get_xyz
+        with torch.no_grad():
+            # TODO: adapt to multiple resolutions
+            for cam in scene.train_cameras[1]:
+                # batch version
+                # img_names.append(cam.image_name)
+                # project_mat.append(cam.full_proj_transform)
+
+                # extract semantic feature
+                h, w = cam.image_height, cam.image_width
+                img = load_images([os.path.join(dataset.source_path,
+                                                dataset.images,
+                                                f"{cam.image_name}.jpg")])
+                img_t = preprocess_image(img, h//14, w//14).cuda()
+                features = extract_features(img_t).reshape(
+                    (h//14, w//14, -1))  # (h, w, 1024)
+                assert features.shape[-1] == 1024
+                features = nn.functional.interpolate(features.permute(0, 3, 1, 2), size=(
+                    h, w), mode="bilinear", align_corners=False).permute(0, 2, 3, 1)
+
+                # remap the projected point to image space
+                p = cam.full_proj_transform
+                xyzw = torch.cat(
+                    [xyzs, torch.ones_like(xyzs[..., 0:1])], dim=-1)
+                xyzk = xyzw@cam.full_proj_transform
+                xy = xyzk[:, :2] / xyzk[:, -1:]
+                mask = (torch.abs(xy[:, 0]) < 1) & (torch.abs(xy[:, 1]) < 1)
+                semantic[mask] += features[xy[mask]]
+                g_cnt[mask] += 1
+            semantic /= g_cnt
+            self._semantic = nn.Parameter(semantic.requires_grad_(True))
+
+        # imgs = load_images([os.path.join(scene.dataset.source_path,
+        #                                  scene.dataset.images,
+        #                                  f"{int(img_name):04d}.jpg") for img_name in img_names])
+
+
+
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
@@ -159,7 +222,7 @@ class GaussianModel:
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
         ]
-
+        # NOTE: only xyz is optimized by expon, others are optimized by adam
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
@@ -289,6 +352,7 @@ class GaussianModel:
         return optimizable_tensors
 
     def prune_points(self, mask):
+        # NOTE: valid_points_mask is the newly splitting Gaussians
         valid_points_mask = ~mask
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
@@ -308,10 +372,13 @@ class GaussianModel:
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             assert len(group["params"]) == 1
+            # NOTE: extension means the number is extensible. Becuase the number of Gaussian is not fixed
             extension_tensor = tensors_dict[group["name"]]
             stored_state = self.optimizer.state.get(group['params'][0], None)
             if stored_state is not None:
 
+                # NOTE: The following code modify the optimizer state and variable:
+                #       add some tensor for new Gaussians and put it back
                 stored_state["exp_avg"] = torch.cat((stored_state["exp_avg"], torch.zeros_like(extension_tensor)), dim=0)
                 stored_state["exp_avg_sq"] = torch.cat((stored_state["exp_avg_sq"], torch.zeros_like(extension_tensor)), dim=0)
 
@@ -351,6 +418,7 @@ class GaussianModel:
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
+        # TODO: where does not use the same "norm" as densify_and_clone? or directly use the grads?
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
@@ -360,6 +428,7 @@ class GaussianModel:
         samples = torch.normal(mean=means, std=stds)
         rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
+        # NOTE: everytime we split a Gaussian, the new Gaussian will have smaller size (scaling)
         new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)

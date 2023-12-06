@@ -19,7 +19,7 @@ from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
 
 class Scene:
-
+    # NOTE: gaussians : GaussianModel是一个类型注解。这表示gaussians应该是GaussianModel类型。
     gaussians : GaussianModel
 
     def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
