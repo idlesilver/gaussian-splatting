@@ -20,7 +20,9 @@ from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
-
+from scene.cameras import Camera
+from utils.semantic_utils import extract_features
+from utils.image_utils import load_images, preprocess_image
 class GaussianModel:
 
     def setup_functions(self):
@@ -51,6 +53,7 @@ class GaussianModel:
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
+        self._semantic = torch.empty(0)
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         # TODO: what does this "denom" means?
@@ -69,6 +72,7 @@ class GaussianModel:
             self._scaling,
             self._rotation,
             self._opacity,
+            self._semantic,
             self.max_radii2D,
             self.xyz_gradient_accum,
             self.denom,
@@ -84,6 +88,7 @@ class GaussianModel:
         self._scaling, 
         self._rotation, 
         self._opacity,
+         self._semantic,
         self.max_radii2D, 
         xyz_gradient_accum, 
         denom,
@@ -117,6 +122,10 @@ class GaussianModel:
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
     
+    @property
+    def get_semantic(self):
+        return self._semantic
+
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
@@ -154,6 +163,51 @@ class GaussianModel:
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+
+    def init_semantic(self, dataset, scene):
+        cam: Camera
+        # img_names = []
+        # project_mat = []
+        semantic = torch.zeros((self.get_xyz.shape[0], 1024)).float().cuda()
+        g_cnt = torch.zeros((self.get_xyz.shape[0])).float().cuda()
+        xyzs = self.get_xyz
+        with torch.no_grad():
+            # TODO: adapt to multiple resolutions
+            for cam in scene.train_cameras[1]:
+                # batch version
+                # img_names.append(cam.image_name)
+                # project_mat.append(cam.full_proj_transform)
+
+                # extract semantic feature
+                h, w = cam.image_height, cam.image_width
+                img = load_images([os.path.join(dataset.source_path,
+                                                dataset.images,
+                                                f"{cam.image_name}.jpg")])
+                img_t = preprocess_image(img, h//14, w//14).cuda()
+                features = extract_features(img_t).reshape(
+                    (h//14, w//14, -1))  # (h, w, 1024)
+                assert features.shape[-1] == 1024
+                features = nn.functional.interpolate(features.permute(0, 3, 1, 2), size=(
+                    h, w), mode="bilinear", align_corners=False).permute(0, 2, 3, 1)
+
+                # remap the projected point to image space
+                p = cam.full_proj_transform
+                xyzw = torch.cat(
+                    [xyzs, torch.ones_like(xyzs[..., 0:1])], dim=-1)
+                xyzk = xyzw@cam.full_proj_transform
+                xy = xyzk[:, :2] / xyzk[:, -1:]
+                mask = (torch.abs(xy[:, 0]) < 1) & (torch.abs(xy[:, 1]) < 1)
+                semantic[mask] += features[xy[mask]]
+                g_cnt[mask] += 1
+            semantic /= g_cnt
+            self._semantic = nn.Parameter(semantic.requires_grad_(True))
+
+        # imgs = load_images([os.path.join(scene.dataset.source_path,
+        #                                  scene.dataset.images,
+        #                                  f"{int(img_name):04d}.jpg") for img_name in img_names])
+
+
+
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
