@@ -6,6 +6,7 @@ from torchvision import transforms
 from PIL import Image
 from matplotlib import pyplot as plt
 import numpy as np
+import os
 
 # %%
 device = 'cuda:0'
@@ -17,7 +18,7 @@ def load_image(image_path_list):
     """Load an image from a file path."""
     imgs = []
     for image_path in image_path_list:
-        imgs.append(Image.open(image_path))
+        imgs.append(Image.open(image_path).resize((1909//2, 1072//2)))
     return imgs
 
 
@@ -53,19 +54,16 @@ def fea2rgb(feature):
 
 # %% Use the function
 # image_path_list = r'data\tandt_db\db\playroom\images\DSC05572.jpg'
-# image_path_list = r'D:\NextcloudRoot\research\gaussian-splatting\data\tandt_db\tandt\truck\images\000001.jpg'
-image_path_list = [
-    r'data\tandt_db\tandt\train\images\00001.jpg',
-    r'data\tandt_db\tandt\train\images\00025.jpg',
-    # r'data\tandt_db\tandt\train\images\00055.jpg',
-    r'data\tandt_db\tandt\train\images\00062.jpg',
-    # r'data\tandt_db\tandt\train\images\00093.jpg',
-    r'data\tandt_db\tandt\train\images\00115.jpg',
-    # r'data\tandt_db\tandt\train\images\00198.jpg',
-    r'data\tandt_db\tandt\train\images\00230.jpg',
-    # r'data\tandt_db\tandt\train\images\00244.jpg',
-    r'data\tandt_db\tandt\train\images\00269.jpg',
-]
+# image_path_list = [
+#     r'D:\NextcloudRoot\research\gaussian-splatting\data\tandt_db\tandt\truck\images\000001.jpg'
+# ]
+source_path = r"D:\NextcloudRoot\research\gaussian-splatting\data\mydata\bottle"
+image_path_list = [os.path.join(source_path, "images", image)
+                   for image in ['0001.jpg',
+                                 #  '0030.jpg',
+                                 #  '0050.jpg',
+                                 '0100.jpg',
+                                 ]]
 imgs = load_image(image_path_list)
 img_h = imgs[0].size[0]
 img_w = imgs[0].size[1]
@@ -86,7 +84,7 @@ pca = PCA(n_components=3)
 pca_features = pca.fit_transform(features_np)
 print(f"PCA semantic feature shape: {pca_features.shape}")
 
-# %%
+# %% 
 n_clusters = 3
 instance = np.zeros_like(pca_features)
 kmeans = KMeans(n_clusters, random_state=0,
@@ -108,7 +106,7 @@ heatmap = heatmap.reshape(bs, patch_h, patch_w, 3)
 instance_mask = instance_mask.reshape(bs, patch_h, patch_w, 3)
 
 # %% visualize
-img_idx = 0
+img_idx = 1
 img = imgs[img_idx]
 heatmap_img = Image.fromarray(heatmap[img_idx, ...]).resize(
     (img_h, img_w))
@@ -121,7 +119,7 @@ plt.imshow(heatmap_img)
 plt.axis('off')
 plt.show()
 
-# %% show instance mask
+# show instance mask
 plt.figure()
 
 plt.figure()
@@ -129,8 +127,7 @@ plt.imshow(instance_mask_img)
 plt.axis('off')
 plt.show()
 
-
-# %% overlap heatmap
+# overlap heatmap
 plt.figure()
 plt.imshow(img)
 plt.axis('off')
