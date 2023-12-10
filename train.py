@@ -22,6 +22,7 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+from utils.semantic_utils import extract_features
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True

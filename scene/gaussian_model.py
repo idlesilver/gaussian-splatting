@@ -22,7 +22,6 @@ from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 from scene.cameras import Camera
 from utils.semantic_utils import extract_features
-from utils.image_utils import load_images, preprocess_image
 class GaussianModel:
 
     def setup_functions(self):
@@ -171,6 +170,7 @@ class GaussianModel:
         semantic = torch.zeros((self.get_xyz.shape[0], 1024)).float().cuda()
         g_cnt = torch.zeros((self.get_xyz.shape[0])).float().cuda()
         xyzs = self.get_xyz
+        
         with torch.no_grad():
             # TODO: adapt to multiple resolutions
             for cam in scene.train_cameras[1]:
@@ -180,15 +180,7 @@ class GaussianModel:
 
                 # extract semantic feature
                 h, w = cam.image_height, cam.image_width
-                img = load_images([os.path.join(dataset.source_path,
-                                                dataset.images,
-                                                f"{cam.image_name}.jpg")])
-                img_t = preprocess_image(img, h//14, w//14).cuda()
-                features = extract_features(img_t).reshape(
-                    (h//14, w//14, -1))  # (h, w, 1024)
-                assert features.shape[-1] == 1024
-                features = nn.functional.interpolate(features.permute(0, 3, 1, 2), size=(
-                    h, w), mode="bilinear", align_corners=False).permute(0, 2, 3, 1)
+                features = cam.gt_semantic
 
                 # remap the projected point to image space
                 p = cam.full_proj_transform
@@ -197,7 +189,9 @@ class GaussianModel:
                 xyzk = xyzw@cam.full_proj_transform
                 xy = xyzk[:, :2] / xyzk[:, -1:]
                 mask = (torch.abs(xy[:, 0]) < 1) & (torch.abs(xy[:, 1]) < 1)
-                semantic[mask] += features[xy[mask]]
+                x = (((xy[mask,0] + 1.0) * h - 1.0) * 0.5).int()
+                y = ((-(xy[mask,1] + 1.0) * w - 1.0) * 0.5).int()
+                semantic[mask] += features[x,y]
                 g_cnt[mask] += 1
             semantic /= g_cnt
             self._semantic = nn.Parameter(semantic.requires_grad_(True))
