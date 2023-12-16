@@ -14,6 +14,7 @@ import numpy as np
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
 from utils.semantic_utils import extract_features
+import torch
 # from utils.image_utils import preprocess_image
 
 WARNED = False
@@ -48,7 +49,9 @@ def loadCam(args, id, cam_info, resolution_scale):
     if resized_image_rgb.shape[1] == 4:
         loaded_mask = resized_image_rgb[3:4, ...]
 
-    gt_semantic = extract_features([gt_image])
+    # gt_semantic = torch.zeros((12, gt_image.shape[0], gt_image.shape[1]))
+    gt_semantic = torch.cat([gt_image, gt_image], dim=0)
+    # gt_semantic = extract_features([gt_image])
 
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 

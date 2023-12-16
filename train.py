@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+
 import os
 import torch
 from random import randint
@@ -22,12 +23,13 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
-from utils.semantic_utils import extract_features
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
+    
+sem_loss_ratio = 0.0
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
@@ -93,8 +95,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        
+        # add semantic groud-truth
+        gt_image = torch.cat((gt_image, viewpoint_cam.gt_semantic), dim=0)
+        
+        Ll1 = (1 - sem_loss_ratio) * l1_loss(image[:3, ...], gt_image[:3, ...]) + sem_loss_ratio * l1_loss(image[3:, ...], gt_image[3:, ...])
+        SSIM = (1 - sem_loss_ratio) * (1.0 - ssim(image[:3, ...], gt_image[:3, ...])) + sem_loss_ratio * (1.0 - ssim(image[3:, ...], gt_image[3:, ...]))
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * SSIM
         loss.backward()
 
         iter_end.record()
@@ -177,12 +184,18 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 for idx, viewpoint in enumerate(config['cameras']):
                     image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
                     gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+                    
+                    # add semantic ground-truth
+                    gt_image = torch.cat((gt_image, viewpoint.gt_semantic), dim=0)
+                    
                     if tb_writer and (idx < 5):
-                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
+                        tb_writer.add_images(config['name'] + f"_view_{viewpoint.image_name}/render_rgb", image[None, :3, :, :], global_step=iteration)
+                        tb_writer.add_images(config['name'] + f"_view_{viewpoint.image_name}/render_sem", image[None, 3:6, :, :], global_step=iteration)
                         if iteration == testing_iterations[0]:
-                            tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
-                    l1_test += l1_loss(image, gt_image).mean().double()
-                    psnr_test += psnr(image, gt_image).mean().double()
+                            tb_writer.add_images(config['name'] + f"_view_{viewpoint.image_name}/ground_truth_rgb", gt_image[None, :3, :, :], global_step=iteration)
+                            tb_writer.add_images(config['name'] + f"_view_{viewpoint.image_name}/ground_truth_sem", gt_image[None, 3:6, :, :], global_step=iteration)
+                    l1_test += (1 - sem_loss_ratio) * l1_loss(image[:3, ...], gt_image[:3, ...]).mean().double() + sem_loss_ratio * l1_loss(image[3:, ...], gt_image[3:, ...]).mean().double()
+                    psnr_test += (1 - sem_loss_ratio) * psnr(image[:3, ...], gt_image[:3, ...]).mean().double() + sem_loss_ratio * psnr(image[3:, ...], gt_image[3:, ...]).mean().double()
                 psnr_test /= len(config['cameras'])
                 l1_test /= len(config['cameras'])          
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
@@ -205,10 +218,10 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[3000, 5000, 7000, 10000, 30000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[3000, 5000, 7000, 10000, 30000])
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[2000, 3000, 5000, 7000])
     parser.add_argument("--start_checkpoint", type=str, default = None)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
